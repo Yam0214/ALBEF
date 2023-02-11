@@ -1,0 +1,25 @@
+train_file: 'data/ve_tiny.json'
+val_file: 'data/ve_tiny.json'                
+test_file: 'data/ve_tiny.json'
+
+image_root: '../tiny_images'
+
+image_res: 384
+batch_size_train: 2 
+batch_size_test: 2 
+
+alpha: 0.4
+distill: False
+warm_up: False
+
+bert_config: 'configs/config_bert.json'
+
+optimizer: {opt: adamW, lr: 2e-5, weight_decay: 0.02}
+schedular: {sched: cosine, lr: 2e-5, epochs: 1, min_lr: 1e-6, decay_rate: 1, warmup_lr: 1e-5, warmup_epochs: 1, cooldown_epochs: 0}
+
+
+
+
+
+
+

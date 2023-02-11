@@ -1,0 +1,50 @@
+[
+    {
+        "post_id": "541727081311113216",
+        "text": "Good Morning !! #WalangPasok",
+        "info_type": "Report-FirstPartyObservation,Other-Irrelevant",
+        "priority": "Low"
+    },
+    {
+        "post_id": "1040349954978529286",
+        "text": "Due to Hurricane Florence, The cemetery will be closed until further notice. #HurricaneFlorence #OakdaleCemetery  #HistoricWilmington",
+        "info_type": "Report-Location,Report-Hashtags,Other-Discussion",
+        "priority": "Low"
+    },
+    {
+        "post_id": "390720900834009088",
+        "text": "RT @michaelneale: The NSW fireys are doing an awesome job. If it was safe I would supply them with cold beer, but fires.",
+        "info_type": "Other-Irrelevant",
+        "priority": "Low"
+    },
+    {
+        "post_id": "1120291662687719424",
+        "text": "Thousands flee shaking Manila buildings as magnitude-6.3 quake strikes Philippines https:\/\/t.co\/FmBbeIyzbD",
+        "info_type": "Other-Irrelevant",
+        "priority": "Low"
+    },
+    {
+        "post_id": "665461832379932672",
+        "text": "SHARE. For anyone in Paris, or who knows anyone stranded\/looking for shelter, locals are using the hashtag #PorteOuverte offering help.",
+        "info_type": "Report-ServiceAvailable,Report-Hashtags",
+        "priority": "Low"
+    },
+    {
+        "post_id": "727639444262670336",
+        "text": "RT @ctvedmonton: LIVE NOW: Officials to have update on wildfire near Ft. McMurray: https:\/\/t.co\/LA5pFHso4l #yeg #ymm #ymmfire https:\/\/t.co\/?",
+        "info_type": "Report-FirstPartyObservation,Report-MultimediaShare,Report-Hashtags,Report-OriginalEvent,Report-News",
+        "priority": "Low"
+    },
+    {
+        "post_id": "592691984147578880",
+        "text": "Leadership matters. #ThankYouPM  https:\/\/t.co\/0kSJllkxRs",
+        "info_type": "Report-FirstPartyObservation,Other-Sentiment",
+        "priority": "Low"
+    },
+    {
+        "post_id": "1121034735818506241",
+        "text": "#DurbanFloods a family here in Mariannhill has lost 3 members. 2 children aged 5 and 14 were in this room when they died. https:\/\/t.co\/JeOwAw5Afb",
+        "info_type": "Report-ThirdPartyObservation,Report-Location,Report-MultimediaShare,Report-Factoid,Report-Hashtags",
+        "priority": "High"
+    }
+]
