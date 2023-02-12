@@ -7,22 +7,66 @@ import time
 import datetime
 import json
 from pathlib import Path
-from sklearn.metrics import precision_recall_fscore_support
+from pprint import pprint
+from sklearn.metrics import classification_report, accuracy_score
 
 import torch
 import torch.backends.cudnn as cudnn
 import torch.distributed as dist
 
-from models.model_trecis import AlbefForMultiplyChoice
-from models.base_model import TextEncoderOnlyForMultiplyChoice
+from models.model_trecis import AlbefForMultiTask
+from models.base_model import TextEncoderOnlyForMultiTask
 from models.vit import interpolate_pos_embed
 from models.tokenization_bert import BertTokenizer
 
 import utils
 from dataset import create_dataset, create_sampler, create_loader
-from dataset.trecis_dataset import INFO_TYPE_CATEGORIES
+from dataset.trecis_dataset import (INFO_TYPE_CATEGORIES,
+                                    PRIORITY_CATEGORIES_DICT, map_pri)
 from scheduler import create_scheduler
 from optim import create_optimizer
+
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default="./trecis/trecis.yaml")
+    parser.add_argument("--output_dir", default="output/trecis")
+    parser.add_argument("--checkpoint",
+                        default="",
+                        help="path to checkpoint")
+    parser.add_argument("--text_encoder", default="bert-base-uncased")
+    parser.add_argument("--evaluate", action="store_true")
+    parser.add_argument("--save_eval_label", action="store_true")
+    parser.add_argument("--device", default="cuda")
+    parser.add_argument("--seed", default=42, type=int)
+    parser.add_argument("--world_size",
+                        default=1,
+                        type=int,
+                        help="number of distributed processes")
+    parser.add_argument("--dist_url",
+                        default="env://",
+                        help="url used to set up distributed training")
+    parser.add_argument("--distributed", action="store_true")
+    parser.add_argument(
+        "--only_text_encoder",
+        action="store_true",
+        help="set this param to load a text encoder for abalation experiment",
+    )
+    parser.add_argument(
+        "--distill",
+        action="store_true",
+        help="whether to use monmentum distillation during finetuning.",
+    )
+    # multi-task
+    parser.add_argument("--use_info_type_cls", action="store_true")
+    parser.add_argument("--use_priority_regression", action="store_true")
+    args = parser.parse_args()
+
+    if not any([args.use_info_type_cls, args.use_priority_regression]):
+        raise ValueError("use_info_type_cls, use_priority_regression "
+                         "should not be all `False`.")
+
+    return args
 
 
 def train(
@@ -66,11 +110,11 @@ def train(
         else:
             alpha = config["alpha"] * min(1, i / len(data_loader))
 
-        loss = model(images,
-                     text_inputs,
-                     targets=targets,
-                     train=True,
-                     alpha=alpha)
+        loss, loss_dict = model(images,
+                                text_inputs,
+                                targets=targets,
+                                train=True,
+                                alpha=alpha)
 
         optimizer.zero_grad()
         loss.backward()
@@ -78,6 +122,8 @@ def train(
 
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
         metric_logger.update(loss=loss.item())
+        for task, task_loss in loss_dict.items():
+            metric_logger.update(**{f"{task}_loss": task_loss.item()})
 
         if epoch == 0 and i % step_size == 0 and i <= warmup_iterations:
             scheduler.step(i // step_size)
@@ -92,7 +138,12 @@ def train(
 
 
 @torch.no_grad()
-def evaluate(model, data_loader, tokenizer, device, config, split=False):
+def evaluate(model, data_loader, tokenizer, device, config, save_pred_res=False):
+
+    label_name_dict = {
+        "info_type_cls": INFO_TYPE_CATEGORIES,
+        "priority_regression": PRIORITY_CATEGORIES_DICT
+    }
     # test
     model.eval()
 
@@ -119,22 +170,24 @@ def evaluate(model, data_loader, tokenizer, device, config, split=False):
         prediction = model(images, text_inputs, targets=targets, train=False)
 
         for task_key, task_pred in prediction.items():
-            if task_key.split("_")[-1] == "score":
-                # skip priority score
-                continue
-            pred_class = (task_pred > 0.5).float()
-            label_class = targets[task_key]
-            # 多标签分类损失
-            accuracy = (label_class == pred_class).sum().item() / np.prod(
-                label_class.shape)
+            if task_key.split("_")[-1] == "regression":
+                # skip priority regression
+                pred_class = map_pri(task_pred.cpu().numpy())
+                label_class = map_pri(targets[task_key].cpu().numpy())
+                accuracy = accuracy_score(label_class, pred_class)
+
+            else:
+                pred_class = (task_pred > 0.5).float().cpu().numpy()
+                label_class = targets[task_key].cpu().numpy()
+                # 多标签分类损失
+                accuracy = (label_class == pred_class).sum().item() / np.prod(
+                    label_class.shape)
 
             # 收集每个info类别的标签和预测
             pred_class_collector.setdefault(task_key, [])
-            pred_class_collector[task_key].extend(
-                pred_class.cpu().numpy().tolist())
+            pred_class_collector[task_key].extend(pred_class.tolist())
             targets_collector.setdefault(task_key, [])
-            targets_collector[task_key].extend(
-                label_class.cpu().numpy().tolist())
+            targets_collector[task_key].extend(label_class.tolist())
             # 记录 micro_acc
             metric_logger.meters[f"{task_key}_acc"].update(accuracy,
                                                            n=images.size(0))
@@ -147,17 +200,26 @@ def evaluate(model, data_loader, tokenizer, device, config, split=False):
         targets_list = targets_collector[task_key]
         pred_class_list = pred_class_collector[task_key]
         # 对每个 info_type 分别计算准确率、precision、recall、macro-f1
-        f1_score, precision, recall, support = precision_recall_fscore_support(
-            targets_list, pred_class_list, average=None)
-        print(f"{task_key:=^80}")
-        for info_type, f1, p, r, num in zip(INFO_TYPE_CATEGORIES, f1_score,
-                                            precision, recall, support):
-            print(f"{info_type:>30}\tf1:{f1:<.2%}\t"
-                  f"precision:{p:<.2%}\trecall:{r:<.2%}\tsupport:{num:}")
-        print(
-            f"{'macro':>30}\tf1:{f1_score.mean():<.2%}\t"
-            f"precision:{precision.mean():<.2%}\trecall:{recall.mean():<.2%}")
-        print()
+        report = classification_report(targets_list,
+                                       pred_class_list,
+                                       digits=4,
+                                       target_names=label_name_dict[task_key])
+        print(report)
+        
+    if save_pred_res:
+        # save predict label for each sample
+        # (post_id,)info_type_pred,priority_pred
+        save_path = Path(args.output_dir) / "eval_res.csv"
+        with open(save_path, "w", encoding="utf8") as file:
+            
+            file.write(
+                ",".join(INFO_TYPE_CATEGORIES) + ",priority_pred\n"
+            )
+            for info_preds, priority_pred in zip(*list(pred_class_collector.values())):
+                file.write(
+                    ",".join(map(str, info_preds)) + "," + priority_pred + "\n"
+                )
+        
     return {
         k: "{:.4f}".format(meter.global_avg)
         for k, meter in metric_logger.meters.items()
@@ -187,7 +249,6 @@ def main(args, config):
                                   global_rank)
     else:
         samplers = [None, None, None]
-
     train_loader, val_loader, test_loader = create_loader(
         datasets,
         samplers,
@@ -203,10 +264,9 @@ def main(args, config):
     # Model
     print("Creating model")
     if args.only_text_encoder:
-        model = TextEncoderOnlyForMultiplyChoice(tokenizer=tokenizer,
-                                                 config=config)
+        model = TextEncoderOnlyForMultiTask(tokenizer=tokenizer, config=config)
     else:
-        model = AlbefForMultiplyChoice(tokenizer=tokenizer, config=config)
+        model = AlbefForMultiTask(tokenizer=tokenizer, config=config)
 
     # load ALBEF pretraining checkpoint if model contain vison encoder
     if args.checkpoint:
@@ -276,8 +336,8 @@ def main(args, config):
                 config,
             )
 
-        val_stats = evaluate(model, val_loader, tokenizer, device, config)
-        # no label in test_data
+        val_stats = evaluate(model, val_loader, tokenizer, device, config, save_pred_res=args.save_eval_label)
+        #TODO(ouyanghongyu): skip test since no label in test_data
         # test_stats = evaluate(model, test_loader, tokenizer, device, config)
 
         if utils.is_main_process():
@@ -304,7 +364,12 @@ def main(args, config):
                 with open(os.path.join(args.output_dir, "log.txt"), "a") as f:
                     f.write(json.dumps(log_stats) + "\n")
 
-                if float(val_stats["info_type_acc"]) > best:
+                if config['use_info_type_cls']:
+                    eval_metric = "info_type_cls_acc"
+                else:
+                    eval_metric = "priority_regression_acc"
+
+                if float(val_stats[eval_metric]) > best:
                     save_obj = {
                         "model": model_without_ddp.state_dict(),
                         "optimizer": optimizer.state_dict(),
@@ -315,7 +380,7 @@ def main(args, config):
                     torch.save(
                         save_obj,
                         os.path.join(args.output_dir, "checkpoint_best.pth"))
-                    best = float(val_stats["info_type_acc"])
+                    best = float(val_stats[eval_metric])
                     best_epoch = epoch
 
         if args.evaluate:
@@ -337,39 +402,28 @@ def main(args, config):
               model.__class__.__name__,
               args.checkpoint if args.checkpoint else args.text_encoder,
           ))
+    print("""
+                   Finetuning Task      use
+          info type classification      {}
+               priority regression      {}
+          """.format(args.use_info_type_cls, args.use_priority_regression))
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="./trecis/trecis.yaml")
-    parser.add_argument("--output_dir", default="output/trecis")
-    parser.add_argument("--checkpoint",
-                        default="",
-                        help="path to pretrained checkpoint")
-    parser.add_argument("--text_encoder", default="bert-base-uncased")
-    parser.add_argument("--evaluate", action="store_true")
-    parser.add_argument("--device", default="cuda")
-    parser.add_argument("--seed", default=42, type=int)
-    parser.add_argument("--world_size",
-                        default=1,
-                        type=int,
-                        help="number of distributed processes")
-    parser.add_argument("--dist_url",
-                        default="env://",
-                        help="url used to set up distributed training")
-    parser.add_argument("--distributed", default=True, type=bool)
-    parser.add_argument(
-        "--only_text_encoder",
-        action="store_true",
-        help="set this param to load a text encoder for abalation experiment",
-    )
-    args = parser.parse_args()
+    args = parse_args()
 
+    # load config
     config = yaml.load(open(args.config, "r"), Loader=yaml.Loader)
+    # overwrite config by args
     config["text_encoder"] = args.text_encoder
-    config["multi_label_nums"] = len(INFO_TYPE_CATEGORIES)
+    config["info_label_nums"] = len(INFO_TYPE_CATEGORIES)
+    config["distill"] = args.distill
+    # set multi task arguments
+    config["use_info_type_cls"] = args.use_info_type_cls
+    config["use_priority_regression"] = args.use_priority_regression
+
     print("{:*^50}".format("load config"))
-    print(config)
+    pprint(config)
 
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 

@@ -8,14 +8,6 @@ from PIL import Image
 from pathlib import Path
 from typing import List
 
-# priority categroies
-PRIORITY_CATEGORIES_DICT = {
-    "Critical": 1.0,
-    "High": 0.75,
-    "Medium": 0.5,
-    "Low": 0.25
-}
-
 # information types
 INFO_TYPE_CATEGORIES = [
     "Request-GoodsServices",
@@ -45,8 +37,29 @@ INFO_TYPE_CATEGORIES = [
     "Other-Sentiment",
 ]
 
+# priority categroies
+PRIORITY_CATEGORIES_DICT = {
+    "Critical": 1.0,
+    "High": 0.75,
+    "Medium": 0.5,
+    "Low": 0.25
+}
 
-class OneImageWithInfoTypeOnlyDataset(Dataset):
+def map_pri(scores: np.ndarray) -> List:
+    label_list = []
+    for score in scores.reshape(-1):
+        if score > 0.75:
+            label_list.append("Critical")
+        elif score > 0.5:
+            label_list.append("High")
+        elif score > 0.25:
+            label_list.append("Medium")
+        else:
+            label_list.append("Low")
+    return np.array(label_list)
+
+
+class TRECISDataset(Dataset):
     """
     "image": "<post_id>",  # "" means no image provided
     "sentence": "<text>",
@@ -89,14 +102,15 @@ class OneImageWithInfoTypeOnlyDataset(Dataset):
         if "info_type" in ann:
             info_type_label = self.convert_label_to_multi_tag(
                 ann["info_type"], INFO_TYPE_CATEGORIES)
-            priority_score = PRIORITY_CATEGORIES_DICT[ann["priority"]]
+            priority_score = np.array(
+                [PRIORITY_CATEGORIES_DICT[ann["priority"]]], dtype="float32")
         else:
             info_type_label = None
             priority_score = None
 
         target = {
-            "info_type": info_type_label,
-            "priority_score": priority_score
+            "info_type_cls": info_type_label,
+            "priority_regression": priority_score
         }
 
         return image, text, target
@@ -107,11 +121,11 @@ class OneImageWithInfoTypeOnlyDataset(Dataset):
         multi_tag = [
             1.0 if label in label_list else 0.0 for label in label_name_list
         ]
-        return np.array(multi_tag)
+        return np.array(multi_tag, dtype="float32")
 
     def convert_label_to_one_hot(self, label_str: str,
                                  label_name_list: List[str]):
         one_hot = [
             1.0 if label_str == label else 0.0 for label in label_name_list
         ]
-        return np.array(one_hot)
+        return np.array(one_hot, dtype="float32")

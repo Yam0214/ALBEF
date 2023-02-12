@@ -1,0 +1,21 @@
+train_file: 'trecis/train.json'
+val_file: 'trecis/val.json'                
+test_file: 'trecis/test.json'
+
+image_root: '../../../my_dataset/trecis_images/'
+max_length: 128
+
+image_res: 384
+batch_size_train: 8
+batch_size_test: 8
+
+alpha: 0.4
+distill: False
+warm_up: True
+
+bert_config: 'configs/config_bert.json'
+text_encoder: "load_from_args"
+
+optimizer: {opt: adamW, lr: 2e-5, weight_decay: 0.02}
+schedular: {sched: cosine, lr: 2e-5, epochs: 10, min_lr: 1e-6, decay_rate: 1, warmup_lr: 1e-5, warmup_epochs: 1, cooldown_epochs: 0}
+

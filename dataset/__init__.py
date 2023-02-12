@@ -9,7 +9,7 @@ from dataset.nlvr_dataset import nlvr_dataset
 from dataset.ve_dataset import ve_dataset
 from dataset.vqa_dataset import vqa_dataset
 from dataset.grounding_dataset import grounding_dataset
-from dataset.trecis_dataset import OneImageWithInfoTypeOnlyDataset
+from dataset.trecis_dataset import TRECISDataset
 
 from dataset.randaugment import RandomAugment
 
@@ -104,14 +104,12 @@ def create_dataset(dataset, config):
         return train_dataset, val_dataset, test_dataset
 
     elif dataset == 'trecis':
-        train_dataset = OneImageWithInfoTypeOnlyDataset(
+        train_dataset = TRECISDataset(
             config["train_file"], train_transform, config['image_root'])
-        val_dataset = OneImageWithInfoTypeOnlyDataset(config["val_file"],
-                                                      train_transform,
-                                                      config['image_root'])
-        test_dataset = OneImageWithInfoTypeOnlyDataset(config["test_file"],
-                                                       train_transform,
-                                                       config['image_root'])
+        val_dataset = TRECISDataset(
+            config["val_file"], train_transform, config['image_root'])
+        test_dataset = TRECISDataset(
+            config["test_file"], train_transform, config['image_root'])
         return train_dataset, val_dataset, test_dataset
 
     elif dataset == 'grounding':

@@ -1,5 +1,7 @@
 # Record Report
 
+## info type classification only
+
 |run|total acc|macro-f1|model|inputs|object|epochs|checkpoint|
 |-|-|-|-|-|-|-|-|
 |kick_off|92.84|53.90|ALBEF|one image & one text|info_type_cls|1|ALBEF|
@@ -7,13 +9,19 @@
 |kick_off/only_text_encoder|92.64|47.97|BERT|one text|info_type_cls|1|ALBEF|
 |kick_off/only_text_encoder|92.69|40.01|BERT|one text|info_type_cls|1|bert-base-uncased|
 
+## info type classification & priority regression
+
+|run|info acc| info macro-f1| priority acc| priority macro-f1| model| inputs| epochs| checkpoint|
+|-|-|-|-|-|-|-|-|-|
+|kick_off|92.33|21.81|32.18|29.30|one image & one text| 1 | ALBEF|
+
 ## FrameWork ToDO
 
 - [x] Base。跑通ALBEF（用`data/tiny.json`）。
 - [x] Kick off。ALBEF跑通info type分类任务。
 - [x] Ablation of Multimodal。使用ALBEF和Bert分别跑通info type分类任务。
-- [ ] Multi-Task。ALBEF跑通info type分类任务以及priority score回归任务。
-- [ ] Ablation of Multi-Task。使用ALBEF和Bert分别跑通多任务。
+- [x] Multi-Task。ALBEF跑通info type分类任务以及priority score回归任务。
+- [x] Ablation of Multi-Task。使用ALBEF和Bert分别跑通多任务。
 - [ ] Offline Evaluation。读取用带标注的测试数据，完成推理和评估。
 - [ ] More Data。能否用上更多的标注数据？
   - [ ] 原始数据和标注数据对齐。
@@ -106,14 +114,14 @@ python finetuned_trecis.py \
   --output_dir output/trecis \
   --checkpoint ./provided_ckpt/ALBEF.pth \
   --device 'cuda:0' \
-  --distributed False > kick_off_albef
+  --distributed False > finetuning_log/kick_off_albef
 
 # kick_off, checkpoint: bert-base-uncased
 python finetuned_trecis.py \
   --config ./trecis/kick_off.yaml \
   --output_dir output/trecis \
   --device 'cuda:0' \
-  --distributed False > kick_off_bert
+  --distributed False > finetuning_log/kick_off_bert
 
 # kick_off/only_text_encoder checkpoint: albef
 python finetuned_trecis.py \
@@ -122,7 +130,7 @@ python finetuned_trecis.py \
   --checkpoint ./provided_ckpt/ALBEF.pth \
   --device 'cuda:0' \
   --distributed False \
-  --only_text_encoder > kick_off_only_text_albef
+  --only_text_encoder > finetuning_log/kick_off_only_text_albef
 
 # kick_off/only_text_encoder checkpoint: bert-base-uncased
 python finetuned_trecis.py \
@@ -130,7 +138,16 @@ python finetuned_trecis.py \
   --output_dir output/trecis \
   --device 'cuda:0' \
   --distributed False \
-  --only_text_encoder > kick_off_only_text_albef
+  --only_text_encoder > finetuning_log/kick_off_only_text_albef
+
+# kick_off, checkpoint: albef, distillation: enable
+python finetuned_trecis.py \
+  --config ./trecis/kick_off.yaml \
+  --output_dir output/trecis \
+  --checkpoint ./provided_ckpt/ALBEF.pth \
+  --device 'cuda:0' \
+  --distill \
+  --distributed False > kick_off_albef_distill
 ```
 
 ```record
@@ -253,4 +270,60 @@ Averaged stats: info_type_acc: 0.9269
               Other-Irrelevant	f1:74.53%	  precision:38.92%	recall:51.13%	support:812
                Other-Sentiment	f1:82.17%	  precision:41.13%	recall:54.82%	support:829
                          macro	f1:40.01%	  precision:21.53%	recall:26.78%
+```
+
+### Multi Task kick_off
+
+
+
+* 输入：
+  * `post_text`
+  * `<posit_id>_0` 如果存在图片，否则0图
+* 训练任务：
+    * info_type_cls 多标签分类
+    * priority_regression 优先级回归
+
+
+debug
+```shell
+python finetuned_trecis.py \
+  --config ./trecis/tiny.yaml \
+  --output_dir output/trecis \
+  --checkpoint ./provided_ckpt/ALBEF.pth \
+  --device 'cuda:0' \
+  --use_info_type_cls \
+  --use_priority_regression
+
+python finetuned_trecis.py \
+  --config ./trecis/tiny.yaml \
+  --output_dir output/trecis \
+  --checkpoint ./provided_ckpt/ALBEF.pth \
+  --device 'cuda:0' \
+  --only_text_encoder \
+  --use_info_type_cls \
+  --use_priority_regression
+```
+
+experiment
+```shell
+# mtl_albef  ckpt(albef)  task(['itc', 'pr'])
+python finetuned_trecis.py \
+  --config ./trecis/mtl_albef.yaml \
+  --output_dir output/trecis/mtl_albef_ONLYTEXT_False_CKPT_albef_TASK_itc_pr \
+  --checkpoint ./provided_ckpt/ALBEF.pth \
+  --save_eval_label \
+  --use_info_type_cls \
+  --use_priority_regression \
+  --device 'cuda:0' > finetuning_log/mtl_albef_ONLYTEXT_False_CKPT_albef_TASK_itc_pr
+
+# mtl_albef/only_text_encoder  ckpt(bert-base-uncased)  task(['itc', 'pr'])
+python finetuned_trecis.py \
+  --config ./trecis/mtl_albef.yaml \
+  --output_dir output/trecis/mtl_albef_ONLYTEXT_True_CKPT_bert_TASK_itc_pr \
+  --checkpoint '' \
+  --save_eval_label \
+  --only_text_encoder \
+  --use_info_type_cls \
+  --use_priority_regression \
+  --device 'cuda:0' > finetuning_log/mtl_albef_ONLYTEXT_True_CKPT_bert_TASK_itc_pr
 ```

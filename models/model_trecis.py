@@ -7,10 +7,10 @@ from torch import nn
 import torch.nn.functional as F
 
 from typing import Optional, Dict
-# from transformers.modeling_outputs import MultipleChoiceModelOutput
+from .task_head import MultiChoiceHead, LogisticRegressionHead
 
 
-class AlbefForMultiplyChoice(nn.Module):
+class AlbefForMultiTask(nn.Module):
     def __init__(
         self,
         tokenizer=None,
@@ -20,6 +20,8 @@ class AlbefForMultiplyChoice(nn.Module):
 
         self.tokenizer = tokenizer
         self.distill = config["distill"]
+        self.use_info_type_cls = config["use_info_type_cls"]
+        self.use_priority_regression = config["use_priority_regression"]
 
         self.visual_encoder = VisionTransformer(
             img_size=config["image_res"],
@@ -33,20 +35,20 @@ class AlbefForMultiplyChoice(nn.Module):
         )
 
         bert_config = BertConfig.from_json_file(config["bert_config"])
-
         self.text_encoder = BertModel.from_pretrained(config["text_encoder"],
                                                       config=bert_config,
                                                       add_pooling_layer=False)
 
-        self.cls_head = nn.Sequential(
-            nn.Linear(
-                self.text_encoder.config.hidden_size,
-                self.text_encoder.config.hidden_size,
-            ),
-            nn.ReLU(),
-            nn.Linear(self.text_encoder.config.hidden_size,
-                      config["multi_label_nums"]),
-        )
+        # multi-task cls head
+        self.task_head_dict = {}
+        if self.use_info_type_cls:
+            self.info_cls_head = MultiChoiceHead(bert_config,
+                                                 config["info_label_nums"])
+            self.task_head_dict.update({"info_type_cls": self.info_cls_head})
+        if self.use_priority_regression:
+            self.priority_regression_head = LogisticRegressionHead(bert_config)
+            self.task_head_dict.update(
+                {"priority_regression": self.priority_regression_head})
 
         if self.distill:
             self.visual_encoder_m = VisionTransformer(
@@ -63,32 +65,40 @@ class AlbefForMultiplyChoice(nn.Module):
                 config["text_encoder"],
                 config=bert_config,
                 add_pooling_layer=False)
-            self.cls_head_m = nn.Sequential(
-                nn.Linear(
-                    self.text_encoder.config.hidden_size,
-                    self.text_encoder.config.hidden_size,
-                ),
-                nn.ReLU(),
-                nn.Linear(self.text_encoder.config.hidden_size,
-                          config["multi_label_nums"]),
-            )
 
             self.model_pairs = [
                 [self.visual_encoder, self.visual_encoder_m],
                 [self.text_encoder, self.text_encoder_m],
-                [self.cls_head, self.cls_head_m],
             ]
+
+            # multi task
+            self.task_head_dict_m = {}
+            if self.use_info_type_cls:
+                self.info_cls_head_m = MultiChoiceHead(
+                    bert_config, config["info_label_nums"])
+                self.model_pairs.append(
+                    [self.info_cls_head, self.info_cls_head_m])
+                self.task_head_dict_m.update(
+                    {"info_cls_type": self.info_cls_head_m})
+            if self.use_priority_regression:
+                self.priority_regression_head_m = LogisticRegressionHead(
+                    bert_config)
+                self.model_pairs.append([
+                    self.priority_regression_head,
+                    self.priority_regression_head_m
+                ])
+                self.task_head_dict_m.update(
+                    {"priority_regression": self.priority_regression_head_m})
+
             self.copy_params()
             self.momentum = 0.995
 
-    def forward(
-        self,
-        image: torch.Tensor,
-        text: torch.Tensor,
-        targets: Dict[str, torch.Tensor],
-        alpha: Optional[float] = 0,
-        train: Optional[bool] = True
-        ):
+    def forward(self,
+                image: torch.Tensor,
+                text: torch.Tensor,
+                targets: Dict[str, torch.Tensor],
+                alpha: Optional[float] = 0,
+                train: Optional[bool] = True):
         # VisonTransformer, ViT -l 12
         image_embeds = self.visual_encoder(image)
         image_atts = torch.ones(image_embeds.size()[:-1],
@@ -101,10 +111,16 @@ class AlbefForMultiplyChoice(nn.Module):
             encoder_attention_mask=image_atts,
             return_dict=True,
         )
-        prediction = self.cls_head(output.last_hidden_state[:, 0, :])
-
+        mtl_outputs_dict = {
+            task: head(output.last_hidden_state[:, 0, :], labels=targets[task])
+            for task, head in self.task_head_dict.items()
+        }
+        # 训练则返回loss，否则返回prediction
         if train:
-            # 训练则返回loss，否则返回prediction
+            task_loss = {
+                task: task_output.loss
+                for task, task_output in mtl_outputs_dict.items()
+            }
             if self.distill:
                 # 如果动态蒸馏
                 with torch.no_grad():
@@ -117,21 +133,41 @@ class AlbefForMultiplyChoice(nn.Module):
                         encoder_attention_mask=image_atts,
                         return_dict=True,
                     )
-                    prediction_m = self.cls_head_m(
-                        output_m.last_hidden_state[:, 0, :])
+                    mtl_outputs_dict_m = {
+                        task: head(output_m.last_hidden_state[:, 0, :])
+                        for task, head in self.task_head_dict_m.items()
+                    }
 
-                loss = ((1 - alpha) * F.binary_cross_entropy_with_logits(
-                    prediction, targets["info_type"]) - alpha * torch.sum(
-                        F.log_softmax(prediction, dim=1) *
-                        F.softmax(prediction_m, dim=1),
-                        dim=1,
-                    ).mean())
+                distill_loss = {}
+                for task in mtl_outputs_dict.keys():
+                    logits = mtl_outputs_dict[task].logits
+                    logits_m = mtl_outputs_dict_m[task].logits
+                    distill_loss.update({
+                        task:
+                        -torch.sum(
+                            F.log_softmax(logits, dim=1) *
+                            F.softmax(logits_m, dim=1),
+                            dim=1,
+                        ).mean()
+                    })
+
+                # 合并 loss
+                # loss = (1-alpha) * task_loss + alpha * distill_loss
+                loss_dict = {}
+                for task in mtl_outputs_dict.keys():
+                    loss = (1 - alpha
+                            ) * task_loss[task] + alpha * distill_loss[task]
+                    loss_dict.update({task: loss})
             else:
-                loss = F.binary_cross_entropy_with_logits(
-                    prediction, targets["info_type"])
-            return loss
+                loss_dict = task_loss
+
+            total_loss = torch.stack(list(loss_dict.values())).sum()
+            return total_loss, loss_dict
         # valuatation or inference
-        return {"info_type": prediction}
+        return {
+            task: task_output.logits
+            for task, task_output in mtl_outputs_dict.items()
+        }
 
     @torch.no_grad()
     def copy_params(self):
