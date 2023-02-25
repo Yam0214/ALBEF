@@ -1,51 +1,57 @@
 import argparse
-import os
-import ruamel.yaml as yaml
-import numpy as np
-import random
-import time
 import datetime
 import json
+import os
+import random
+import time
 from pathlib import Path
 from pprint import pprint
-from sklearn.metrics import classification_report, accuracy_score
 
+import numpy as np
+import ruamel.yaml as yaml
 import torch
 import torch.backends.cudnn as cudnn
 import torch.distributed as dist
-
-from models.model_trecis import AlbefForMultiTask
-from models.base_model import TextEncoderOnlyForMultiTask
-from models.vit import interpolate_pos_embed
-from models.tokenization_bert import BertTokenizer
+from sklearn.metrics import accuracy_score, classification_report, f1_score
 
 import utils
-from dataset import create_dataset, create_sampler, create_loader
-from dataset.trecis_dataset import (INFO_TYPE_CATEGORIES,
-                                    PRIORITY_CATEGORIES_DICT, map_pri)
-from scheduler import create_scheduler
+from dataset import create_dataset, create_loader, create_sampler
+from dataset.trecis_dataset import (
+    INFO_TYPE_CATEGORIES,
+    PRIORITY_CATEGORIES_DICT,
+    map_pri,
+)
+from models.base_model import TextEncoderOnlyForMultiTask
+from models.model_trecis import AlbefForMultiTask
+from models.tokenization_bert import BertTokenizer
+from models.vit import interpolate_pos_embed
 from optim import create_optimizer
+from scheduler import create_scheduler
 
 
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="./trecis/trecis.yaml")
     parser.add_argument("--output_dir", default="output/trecis")
-    parser.add_argument("--checkpoint",
-                        default="",
-                        help="path to checkpoint")
+    parser.add_argument("--checkpoint", default="", help="path to checkpoint")
     parser.add_argument("--text_encoder", default="bert-base-uncased")
     parser.add_argument("--evaluate", action="store_true")
     parser.add_argument("--save_eval_label", action="store_true")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--seed", default=42, type=int)
-    parser.add_argument("--world_size",
-                        default=1,
-                        type=int,
-                        help="number of distributed processes")
-    parser.add_argument("--dist_url",
-                        default="env://",
-                        help="url used to set up distributed training")
+    parser.add_argument(
+        "--early_stop",
+        default=-1,
+        type=int,
+        help="num epochs to wait if eval_metric isn't increase. "
+        "-1 means never stopping befor max_epochs",
+    )
+    parser.add_argument(
+        "--world_size", default=1, type=int, help="number of distributed processes"
+    )
+    parser.add_argument(
+        "--dist_url", default="env://", help="url used to set up distributed training"
+    )
     parser.add_argument("--distributed", action="store_true")
     parser.add_argument(
         "--only_text_encoder",
@@ -60,11 +66,13 @@ def parse_args():
     # multi-task
     parser.add_argument("--use_info_type_cls", action="store_true")
     parser.add_argument("--use_priority_regression", action="store_true")
+
     args = parser.parse_args()
 
     if not any([args.use_info_type_cls, args.use_priority_regression]):
-        raise ValueError("use_info_type_cls, use_priority_regression "
-                         "should not be all `False`.")
+        raise ValueError(
+            "use_info_type_cls, use_priority_regression " "should not be all `False`."
+        )
 
     return args
 
@@ -85,36 +93,40 @@ def train(
 
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter(
-        "lr", utils.SmoothedValue(window_size=50, fmt="{value:.6f}"))
+        "lr", utils.SmoothedValue(window_size=50, fmt="{value:.6f}")
+    )
     metric_logger.add_meter(
-        "loss", utils.SmoothedValue(window_size=50, fmt="{value:.4f}"))
+        "loss", utils.SmoothedValue(window_size=50, fmt="{value:.4f}")
+    )
 
     header = "Train Epoch: [{}]".format(epoch)
     print_freq = 50
     step_size = 100
     warmup_iterations = warmup_steps * step_size
 
-    for i, (images, text, targets) in enumerate(
-            metric_logger.log_every(data_loader, print_freq, header)):
+    for i, (images, text, targets, image_attention_mask) in enumerate(
+        metric_logger.log_every(data_loader, print_freq, header)
+    ):
         images = images.to(device, non_blocking=True)
         targets = {
-            key: value.to(device, non_blocking=True)
-            for key, value in targets.items()
+            key: value.to(device, non_blocking=True) for key, value in targets.items()
         }
 
-        text_inputs = tokenizer(text, padding="longest",
-                                return_tensors="pt").to(device)
+        text_inputs = tokenizer(text, padding="longest", return_tensors="pt").to(device)
 
         if epoch > 0 or not config["warm_up"]:
             alpha = config["alpha"]
         else:
             alpha = config["alpha"] * min(1, i / len(data_loader))
 
-        loss, loss_dict = model(images,
-                                text_inputs,
-                                targets=targets,
-                                train=True,
-                                alpha=alpha)
+        loss, loss_dict = model(
+            images,
+            text_inputs,
+            targets=targets,
+            train=True,
+            alpha=alpha,
+            image_attention_mask=image_attention_mask,
+        )
 
         optimizer.zero_grad()
         loss.backward()
@@ -139,10 +151,9 @@ def train(
 
 @torch.no_grad()
 def evaluate(model, data_loader, tokenizer, device, config, save_pred_res=False):
-
     label_name_dict = {
         "info_type_cls": INFO_TYPE_CATEGORIES,
-        "priority_regression": PRIORITY_CATEGORIES_DICT
+        "priority_regression": PRIORITY_CATEGORIES_DICT,
     }
     # test
     model.eval()
@@ -155,19 +166,23 @@ def evaluate(model, data_loader, tokenizer, device, config, save_pred_res=False)
     pred_class_collector = {}
     targets_collector = {}
 
-    for images, text, targets in metric_logger.log_every(
-            data_loader, print_freq, header):
-
+    for images, text, targets, image_attention_mask in metric_logger.log_every(
+        data_loader, print_freq, header
+    ):
         images = images.to(device, non_blocking=True)
         targets = {
-            key: value.to(device, non_blocking=True)
-            for key, value in targets.items()
+            key: value.to(device, non_blocking=True) for key, value in targets.items()
         }
 
-        text_inputs = tokenizer(text, padding="longest",
-                                return_tensors="pt").to(device)
+        text_inputs = tokenizer(text, padding="longest", return_tensors="pt").to(device)
 
-        prediction = model(images, text_inputs, targets=targets, train=False)
+        prediction = model(
+            images,
+            text_inputs,
+            targets=targets,
+            train=False,
+            image_attention_mask=image_attention_mask,
+        )
 
         for task_key, task_pred in prediction.items():
             if task_key.split("_")[-1] == "regression":
@@ -181,7 +196,8 @@ def evaluate(model, data_loader, tokenizer, device, config, save_pred_res=False)
                 label_class = targets[task_key].cpu().numpy()
                 # 多标签分类损失
                 accuracy = (label_class == pred_class).sum().item() / np.prod(
-                    label_class.shape)
+                    label_class.shape
+                )
 
             # 收集每个info类别的标签和预测
             pred_class_collector.setdefault(task_key, [])
@@ -189,41 +205,56 @@ def evaluate(model, data_loader, tokenizer, device, config, save_pred_res=False)
             targets_collector.setdefault(task_key, [])
             targets_collector[task_key].extend(label_class.tolist())
             # 记录 micro_acc
-            metric_logger.meters[f"{task_key}_acc"].update(accuracy,
-                                                           n=images.size(0))
+            metric_logger.meters[f"{task_key}_acc"].update(accuracy, n=images.size(0))
 
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger.global_avg())
 
+    report_dict = {}
     for task_key in pred_class_collector.keys():
         targets_list = targets_collector[task_key]
         pred_class_list = pred_class_collector[task_key]
         # 对每个 info_type 分别计算准确率、precision、recall、macro-f1
-        report = classification_report(targets_list,
-                                       pred_class_list,
-                                       digits=4,
-                                       target_names=label_name_dict[task_key])
+        report = classification_report(
+            targets_list,
+            pred_class_list,
+            digits=4,
+            target_names=label_name_dict[task_key],
+        )
         print(report)
-        
+        f1 = f1_score(targets_list, pred_class_list, average="macro")
+        report_dict.setdefault(f"{task_key}_f1", f"{f1:.4f}")
+
     if save_pred_res:
         # save predict label for each sample
         # (post_id,)info_type_pred,priority_pred
         save_path = Path(args.output_dir) / "eval_res.csv"
         with open(save_path, "w", encoding="utf8") as file:
-            
-            file.write(
-                ",".join(INFO_TYPE_CATEGORIES) + ",priority_pred\n"
-            )
-            for info_preds, priority_pred in zip(*list(pred_class_collector.values())):
-                file.write(
-                    ",".join(map(str, info_preds)) + "," + priority_pred + "\n"
-                )
-        
-    return {
-        k: "{:.4f}".format(meter.global_avg)
-        for k, meter in metric_logger.meters.items()
-    }
+            file.write(",".join(INFO_TYPE_CATEGORIES) + ",priority_pred\n")
+            if len(pred_class_collector) == 2:
+                for info_preds, priority_pred in zip(
+                    *list(pred_class_collector.values())
+                ):
+                    file.write(
+                        ",".join(map(str, info_preds)) + "," + priority_pred + "\n"
+                    )
+            elif config["use_info_type_cls"]:
+                for info_preds in list(pred_class_collector.values())[0]:
+                    file.write(",".join(map(str, info_preds)) + "," + "" + "\n")
+            else:
+                for priority_pred in list(pred_class_collector.values())[0]:
+                    file.write(
+                        ",".join(map(str, [0] * len(INFO_TYPE_CATEGORIES)))
+                        + ","
+                        + priority_pred
+                        + "\n"
+                    )
+
+    for k, meter in metric_logger.meters.items():
+        report_dict.setdefault(k, "{:.4f}".format(meter.global_avg))
+
+    return report_dict
 
 
 def main(args, config):
@@ -245,15 +276,15 @@ def main(args, config):
     if args.distributed:
         num_tasks = utils.get_world_size()
         global_rank = utils.get_rank()
-        samplers = create_sampler(datasets, [True, False, False], num_tasks,
-                                  global_rank)
+        samplers = create_sampler(
+            datasets, [True, False, False], num_tasks, global_rank
+        )
     else:
         samplers = [None, None, None]
     train_loader, val_loader, test_loader = create_loader(
         datasets,
         samplers,
-        batch_size=[config["batch_size_train"]] +
-        [config["batch_size_test"]] * 2,
+        batch_size=[config["batch_size_train"]] + [config["batch_size_test"]] * 2,
         num_workers=[4, 4, 4],
         is_trains=[True, False, False],
         collate_fns=[None, None, None],
@@ -277,17 +308,17 @@ def main(args, config):
             # reshape positional embedding to accomodate
             # for image resolution change
             pos_embed_reshaped = interpolate_pos_embed(
-                state_dict["visual_encoder.pos_embed"], model.visual_encoder)
+                state_dict["visual_encoder.pos_embed"], model.visual_encoder
+            )
             state_dict["visual_encoder.pos_embed"] = pos_embed_reshaped
 
         if not args.evaluate:
             if config["distill"]:
                 if not args.only_text_encoder:
                     m_pos_embed_reshaped = interpolate_pos_embed(
-                        state_dict["visual_encoder_m.pos_embed"],
-                        model.visual_encoder_m)
-                    state_dict[
-                        "visual_encoder_m.pos_embed"] = m_pos_embed_reshaped
+                        state_dict["visual_encoder_m.pos_embed"], model.visual_encoder_m
+                    )
+                    state_dict["visual_encoder_m.pos_embed"] = m_pos_embed_reshaped
 
             for key in list(state_dict.keys()):
                 if "bert" in key:
@@ -303,8 +334,7 @@ def main(args, config):
 
     model_without_ddp = model
     if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(
-            model, device_ids=[args.gpu])
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
         model_without_ddp = model.module
 
     arg_opt = utils.AttrDict(config["optimizer"])
@@ -313,79 +343,83 @@ def main(args, config):
     lr_scheduler, _ = create_scheduler(arg_sche, optimizer)
 
     max_epoch = config["schedular"]["epochs"]
-    warmup_steps = config["schedular"]["warmup_epochs"]
-    best = 0
+    warmup_epochs = config["schedular"]["warmup_epochs"]
+    best = -1.0
     best_epoch = 0
 
     print("Start training")
     start_time = time.time()
+    best_report = None
+    patient_count = args.early_stop
+
+    model_save_path = Path(args.output_dir) / "checkpoint_best.pth"
+
+    log_path = Path(args.output_dir) / "log.txt"
+    if log_path.exists():
+        # if exists then remove it
+        log_path.unlink()
 
     for epoch in range(0, max_epoch):
-        if not args.evaluate:
-            if args.distributed:
-                train_loader.sampler.set_epoch(epoch)
-            train_stats = train(
-                model,
-                train_loader,
-                optimizer,
-                tokenizer,
-                epoch,
-                warmup_steps,
-                device,
-                lr_scheduler,
-                config,
-            )
+        if args.distributed:
+            train_loader.sampler.set_epoch(epoch)
+        train_stats = train(
+            model,
+            train_loader,
+            optimizer,
+            tokenizer,
+            epoch,
+            warmup_epochs,
+            device,
+            lr_scheduler,
+            config,
+        )
 
-        val_stats = evaluate(model, val_loader, tokenizer, device, config, save_pred_res=args.save_eval_label)
-        #TODO(ouyanghongyu): skip test since no label in test_data
+        val_stats = evaluate(
+            model,
+            val_loader,
+            tokenizer,
+            device,
+            config,
+        )
+        # TODO(ouyanghongyu): skip test since no label in test_data
         # test_stats = evaluate(model, test_loader, tokenizer, device, config)
 
         if utils.is_main_process():
-            if args.evaluate:
-                log_stats = {
-                    **{f"val_{k}": v
-                       for k, v in val_stats.items()},
-                    #  **{f'test_{k}': v for k, v in test_stats.items()},
+            log_stats = {
+                **{f"train_{k}": v for k, v in train_stats.items()},
+                **{f"val_{k}": v for k, v in val_stats.items()},
+                #  **{f'test_{k}': v for k, v in test_stats.items()},
+                "epoch": epoch,
+            }
+
+            with open(os.path.join(args.output_dir, "log.txt"), "a") as f:
+                f.write(json.dumps(log_stats) + "\n")
+
+            eval_score = 0
+            eval_score += float(val_stats.get("info_type_cls_f1", 0))
+            eval_score += float(val_stats.get("priority_regression_f1", 0))
+
+            if eval_score > best:
+                patient_count = args.early_stop
+                save_obj = {
+                    "model": model_without_ddp.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "lr_scheduler": lr_scheduler.state_dict(),
+                    "config": config,
                     "epoch": epoch,
                 }
-
-                with open(os.path.join(args.output_dir, "log.txt"), "a") as f:
-                    f.write(json.dumps(log_stats) + "\n")
+                torch.save(save_obj, model_save_path)
+                best = eval_score
+                best_epoch = epoch
+                best_report = val_stats
             else:
-                log_stats = {
-                    **{f"train_{k}": v
-                       for k, v in train_stats.items()},
-                    **{f"val_{k}": v
-                       for k, v in val_stats.items()},
-                    #  **{f'test_{k}': v for k, v in test_stats.items()},
-                    "epoch": epoch,
-                }
+                patient_count -= 1
+                if args.early_stop > 0 and patient_count <= 0:
+                    print("early stop at epoch {}".format(epoch))
+                    break
 
-                with open(os.path.join(args.output_dir, "log.txt"), "a") as f:
-                    f.write(json.dumps(log_stats) + "\n")
+        lr_scheduler.step(epoch + warmup_epochs + 1)
 
-                if config['use_info_type_cls']:
-                    eval_metric = "info_type_cls_acc"
-                else:
-                    eval_metric = "priority_regression_acc"
-
-                if float(val_stats[eval_metric]) > best:
-                    save_obj = {
-                        "model": model_without_ddp.state_dict(),
-                        "optimizer": optimizer.state_dict(),
-                        "lr_scheduler": lr_scheduler.state_dict(),
-                        "config": config,
-                        "epoch": epoch,
-                    }
-                    torch.save(
-                        save_obj,
-                        os.path.join(args.output_dir, "checkpoint_best.pth"))
-                    best = float(val_stats[eval_metric])
-                    best_epoch = epoch
-
-        if args.evaluate:
-            break
-        lr_scheduler.step(epoch + warmup_steps + 1)
         if args.distributed:
             dist.barrier()
 
@@ -393,20 +427,60 @@ def main(args, config):
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print("Training time {}".format(total_time_str))
 
+    # do evaluation after training
+    if args.evaluate:
+        # load best model
+        checkpoint = torch.load(model_save_path, map_location="cpu")
+        state_dict = checkpoint["model"]
+
+        msg = model.load_state_dict(state_dict, strict=False)
+        print("load best model from {}".format(model_save_path))
+        print(msg)
+
+        val_stats = evaluate(
+            model,
+            val_loader,
+            tokenizer,
+            device,
+            config,
+            save_pred_res=args.save_eval_label,
+        )
+
+        log_stats = {
+            **{f"val_{k}": v for k, v in val_stats.items()},
+            #  **{f'test_{k}': v for k, v in test_stats.items()},
+            "epoch": epoch,
+        }
+
+        if utils.is_main_process():
+            with open(os.path.join(args.output_dir, "val_log.txt"), "w") as f:
+                f.write(json.dumps(log_stats) + "\n")
+
     if utils.is_main_process():
         with open(os.path.join(args.output_dir, "log.txt"), "a") as f:
-            f.write("best epoch: %d" % best_epoch)
+            info = "best epoch: %d\n" % best_epoch
+            f.write(info)
+            print(info)
+            for key, value in best_report.items():
+                info = f"{key:>30}:\t{value}\n"
+                f.write(info)
+                print(info)
 
-    print("End finetuning for `class {}` with '{}' pretraining checkpoint".
-          format(
-              model.__class__.__name__,
-              args.checkpoint if args.checkpoint else args.text_encoder,
-          ))
-    print("""
+    print(
+        "End finetuning for `class {}` with '{}' pretraining checkpoint".format(
+            model.__class__.__name__,
+            args.checkpoint if args.checkpoint else args.text_encoder,
+        )
+    )
+    print(
+        """
                    Finetuning Task      use
           info type classification      {}
                priority regression      {}
-          """.format(args.use_info_type_cls, args.use_priority_regression))
+          """.format(
+            args.use_info_type_cls, args.use_priority_regression
+        )
+    )
 
 
 if __name__ == "__main__":

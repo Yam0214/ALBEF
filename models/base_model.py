@@ -68,7 +68,9 @@ class TextEncoderOnlyForMultiTask(nn.Module):
                 text: torch.Tensor,
                 targets: Dict[str, torch.Tensor],
                 alpha: Optional[float] = 0,
-                train: Optional[bool] = True):
+                train: Optional[bool] = True,
+                image_attention_mask: Optional[torch.Tensor] = None,
+                **kwargs):
 
         # image is specificed but isn't used
         output = self.text_encoder(text.input_ids,

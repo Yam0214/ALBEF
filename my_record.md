@@ -11,9 +11,24 @@
 
 ## info type classification & priority regression
 
-|run|info acc| info macro-f1| priority acc| priority macro-f1| model| inputs| epochs| checkpoint|
-|-|-|-|-|-|-|-|-|-|
-|kick_off|92.33|21.81|32.18|29.30|one image & one text| 1 | ALBEF|
+| run                   | info acc | info macro-f1 | priority acc | priority macro-f1 | model      | inputs               | epochs | checkpoint              |
+| --------------------- | -------- | ------------- | ------------ | ----------------- | ---------- | -------------------- | ------ | ----------------------- |
+| kick_off              | 92.33    | 21.81         | 32.18        | 29.30             | ALBEF      | one image & one text | 1      | ALBEF                   |
+| wangcongcong          |          | 47.32         |              | 34.55             | distilbert | one text             | 10     | distilbert-base-uncased |
+| mtl                   | 92.68    | 45.40         | 55.60        | 41.65             | ALBEF      | one image & one text | 8      | ALBEF                   |
+| mtl                   | 92.76    | 48.77         | \            | \                 | ALBEF      | one image & one text | 8      | ALBEF                   |
+| mtl                   | \        | \             | 59.04        | 40.96             | ALBEF      | one image & one text | 5      | ALBEF                   |
+| mtl/only_text_encoder | 92.96    | 45.76         | 54.98        | 44.47             | BERT       | one text             | 6      | bert-base-uncased       |
+| mtl/only_text_encoder | 92.74    | **49.70**     | \            | \                 | BERT       | one text             | 10     | bert-base-uncased       |
+| mtl/only_text_encoder | \        | \             | 58.98        | 43.91             | BERT       | one text             | 10     | bert-base-uncased       |
+
+
+
+
+
+
+
+
 
 ## FrameWork ToDO
 
@@ -70,13 +85,14 @@ python VE.py \
 ## Run for TREC-IS
 
 debug
-```
+```shell
 python finetuned_trecis.py \
   --config ./trecis/tiny.yaml \
   --output_dir output/trecis \
   --checkpoint ./provided_ckpt/ALBEF.pth \
-  --device 'cuda:0' \
-  --distributed False
+  --early_stop 3 \
+  --device 'cuda:0'\
+  --use_info_type_cls
 ```
 
 
@@ -326,4 +342,102 @@ python finetuned_trecis.py \
   --use_info_type_cls \
   --use_priority_regression \
   --device 'cuda:0' > finetuning_log/mtl_albef_ONLYTEXT_True_CKPT_bert_TASK_itc_pr
+```
+
+```record
+# mtl_albef  ckpt(albef)  task(['itc', 'pr'])
+# EPOCH 8
+Averaged stats: info_type_cls_acc: 0.9275  priority_regression_acc: 0.5519
+                              precision    recall  f1-score   support
+
+       Request-GoodsServices     0.0000    0.0000    0.0000        13
+   Request-InformationWanted     0.5000    0.0370    0.0690        27
+     Request-SearchAndRescue     0.7857    0.4583    0.5789        24
+      CallToAction-Donations     0.6866    0.4792    0.5644        96
+     CallToAction-MovePeople     0.4545    0.2632    0.3333        19
+      CallToAction-Volunteer     0.0000    0.0000    0.0000        12
+              Report-CleanUp     1.0000    0.0909    0.1667        11
+      Report-EmergingThreats     0.6310    0.3272    0.4309       162
+              Report-Factoid     0.6812    0.5831    0.6283       590
+Report-FirstPartyObservation     0.4643    0.3903    0.4241       433
+             Report-Hashtags     0.7867    0.6957    0.7384       917
+             Report-Location     0.7003    0.6924    0.6964       621
+      Report-MultimediaShare     0.6657    0.5616    0.6093       844
+                 Report-News     0.6772    0.6256    0.6503       892
+          Report-NewSubEvent     0.3824    0.1711    0.2364        76
+             Report-Official     0.4918    0.4286    0.4580       140
+        Report-OriginalEvent     0.5389    0.3249    0.4054       277
+     Report-ServiceAvailable     0.6000    0.4444    0.5106       135
+Report-ThirdPartyObservation     0.6191    0.5466    0.5806       580
+              Report-Weather     0.7269    0.6898    0.7079       274
+                Other-Advice     0.4820    0.3722    0.4201       180
+ Other-ContextualInformation     0.7951    0.5740    0.6667       169
+            Other-Discussion     0.4764    0.3367    0.3945       300
+            Other-Irrelevant     0.6790    0.4975    0.5743       812
+             Other-Sentiment     0.7120    0.6562    0.6830       829
+
+                   micro avg     0.6639    0.5540    0.6040      8433
+                   macro avg     0.5815    0.4099    0.4611      8433
+                weighted avg     0.6566    0.5540    0.5976      8433
+                 samples avg     0.6195    0.5435    0.5576      8433
+
+              precision    recall  f1-score   support
+
+    Critical     0.1633    0.4000    0.2319        40
+        High     0.3607    0.4219    0.3889       365
+      Medium     0.9308    0.5785    0.7135      2465
+         Low     0.2039    0.5284    0.2943       511
+
+    accuracy                         0.5519      3381
+   macro avg     0.4147    0.4822    0.4071      3381
+weighted avg     0.7503    0.5519    0.6094      3381
+
+
+
+# # mtl_albef/only_text_encoder  ckpt(bert-base-uncased)  task(['itc', 'pr'])
+# EPOCH 8
+Averaged stats: info_type_cls_acc: 0.9290  priority_regression_acc: 0.4933
+                              precision    recall  f1-score   support
+
+       Request-GoodsServices     0.6667    0.1538    0.2500        13
+   Request-InformationWanted     0.5000    0.1481    0.2286        27
+     Request-SearchAndRescue     0.7857    0.4583    0.5789        24
+      CallToAction-Donations     0.6707    0.5729    0.6180        96
+     CallToAction-MovePeople     0.4444    0.2105    0.2857        19
+      CallToAction-Volunteer     0.0000    0.0000    0.0000        12
+              Report-CleanUp     1.0000    0.0909    0.1667        11
+      Report-EmergingThreats     0.6071    0.3148    0.4146       162
+              Report-Factoid     0.6661    0.6254    0.6451       590
+Report-FirstPartyObservation     0.5254    0.3349    0.4090       433
+             Report-Hashtags     0.7621    0.7721    0.7671       917
+             Report-Location     0.6801    0.7327    0.7054       621
+      Report-MultimediaShare     0.6419    0.6457    0.6438       844
+                 Report-News     0.6651    0.6300    0.6471       892
+          Report-NewSubEvent     0.4783    0.1447    0.2222        76
+             Report-Official     0.6129    0.4071    0.4893       140
+        Report-OriginalEvent     0.5844    0.3249    0.4176       277
+     Report-ServiceAvailable     0.6667    0.4889    0.5641       135
+Report-ThirdPartyObservation     0.6485    0.5534    0.5972       580
+              Report-Weather     0.7545    0.6058    0.6721       274
+                Other-Advice     0.4528    0.4000    0.4248       180
+ Other-ContextualInformation     0.7273    0.5680    0.6379       169
+            Other-Discussion     0.5000    0.3000    0.3750       300
+            Other-Irrelevant     0.6684    0.4766    0.5564       812
+             Other-Sentiment     0.7291    0.6719    0.6993       829
+
+                   micro avg     0.6682    0.5722    0.6165      8433
+                   macro avg     0.6175    0.4253    0.4806      8433
+                weighted avg     0.6591    0.5722    0.6063      8433
+                 samples avg     0.6235    0.5576    0.5665      8433
+
+              precision    recall  f1-score   support
+
+    Critical     0.1579    0.3750    0.2222        40
+        High     0.3632    0.4658    0.4082       365
+      Medium     0.9367    0.4860    0.6400      2465
+         Low     0.1852    0.5577    0.2780       511
+
+    accuracy                         0.4933      3381
+   macro avg     0.4107    0.4711    0.3871      3381
+weighted avg     0.7520    0.4933    0.5553      3381
 ```

@@ -39,7 +39,11 @@ class MultiChoiceHead(nn.Module):
 class LogisticRegressionHead(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.regression_head = nn.Linear(config.hidden_size, 1)
+        self.regression_head = nn.Sequential(
+            nn.Linear(
+                config.hidden_size,
+                config.hidden_size,
+            ), nn.ReLU(), nn.Linear(config.hidden_size, 1))
 
     def forward(self, inputs: torch.Tensor, labels: Optional[torch.Tensor]):
         logits = self.regression_head(inputs)
